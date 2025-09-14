@@ -1,0 +1,617 @@
+void load_data(const char *filename, float *data, int size){
+    FILE *file = fopen(filename, "rb");
+    if (file == NULL){
+        fprintf(stderr, "Error opening file: %s\n", filename);
+        exit(1);
+    }
+    size_t read_size = fread(data, sizeof(float), size, file);
+    if (read_size != size){
+        fprintf(stderr, "Error reading data: expected %d elements, got %zu\n", size, read_size);
+    }
+    fclose(file);
+}
+
+
+void initialize_weights(float *weights, int c1, int c2, int height, int width){
+    int total_1 = c2 * height * width;  
+    int total_2 = c1 * c2 * height * width;  
+    
+    float scale = sqrtf(2.0f / total_1);  
+    
+    for (int i = 0; i < total_2; i++) {
+        weights[i] = ((float)rand() / RAND_MAX) * 2.0f * scale - scale;  
+    }
+}
+
+void initialize_matmul_weights(float *weights, int input_size, int output_size) {
+    float scale = sqrtf(2.0f / input_size);
+    for (int i = 0; i < input_size * output_size; i++) {
+        weights[i] = ((float)rand() / RAND_MAX) * 2.0f * scale - scale;
+    }
+}
+
+void initialize_bias(float *biases, int size){
+    for (int i = 0; i < size; i++) {
+        biases[i] = 0.0f;
+    }
+}
+
+
+void normalize_data(float *data, int size){
+    const float mean = 0.1307f;
+    const float std = 0.3081f;
+    for (int i = 0; i < size; i++){
+        data[i] = (data[i] - mean) / std;
+    }
+}
+
+void matmul_a_b(float *A, float *B, float *C, int m, int n, int k) {
+    for (int i = 0; i < m; i++) {
+        for (int j = 0; j < k; j++) {
+            C[i * k + j] = 0.0f;
+            for (int l = 0; l < n; l++) {
+                C[i * k + j] += A[i * n + l] * B[l * k + j];
+            }
+        }
+    }
+}
+
+void matmul_a_bt(float *A, float *B, float *C, int m, int n, int k) {
+    for (int i = 0; i < m; i++) {
+        for (int j = 0; j < k; j++) {
+            C[i * k + j] = 0.0f;
+            for (int l = 0; l < n; l++) {
+                C[i * k + j] += A[i * n + l] * B[j * n + l];
+            }
+        }
+    }
+}
+
+void matmul_at_b(float *A, float *B, float *C, int m, int n, int k) {
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < k; j++) {
+            C[i * k + j] = 0.0f;
+            for (int l = 0; l < m; l++) {
+                C[i * k + j] += A[l * n + i] * B[l * k + j];
+            }
+        }
+    }
+}
+
+void conv2d_forward(float *input, float *output, float *filter, int r, int in_channels, int out_channels, int height, int width){
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < out_channels; j++){
+            for (int k = 0; k < height; k++){
+                for (int l = 0; l < width; l++){
+                    float Pval = 0.0;
+                    for (int in_ch = 0; in_ch < in_channels; in_ch++){
+                        for (int m = 0; m < 2*r+1; m++){
+                            for (int n = 0; n < 2*r+1; n++){
+                                int inRow = k - r + m;
+                                int inCol = l - r + n;
+                                if (inRow >=0 && inRow < height && inCol >=0 && inCol <width){
+                                    int filter_idx = j * (in_channels * (2*r+1) * (2*r+1)) + in_ch * ((2*r+1) * (2*r+1)) + m * (2*r+1) + n;
+                                    int input_idx = i * (in_channels * height * width) + in_ch * (height * width) + inRow * width + inCol;
+                                    Pval += filter[filter_idx] * input[input_idx];
+                                }
+                            }
+                        }
+
+                    }        
+                    int output_idx = i * (out_channels * height * width) + j * (height * width) + k * width + l;
+                    output[output_idx] = Pval;
+                }
+            }
+        }
+    }
+}
+
+void conv2d_backward(float *input, float *output, float *filter, float *grad_input, float *grad_output, float *grad_filter, int r, int in_channels, int out_channels, int height, int width){
+    for (int i = 0; i < batch_size; i++){
+        for (int in_ch = 0; in_ch < in_channels; in_ch++){
+            for (int k = 0; k < height; k++){
+                for (int l = 0; l < width; l++){
+                    float grad_sum = 0.0f;
+                    for (int out_ch = 0; out_ch < out_channels; out_ch++){
+                        for (int m = 0; m < 2*r+1; m++){
+                            for (int n = 0; n < 2*r+1; n++){
+                                int outRow = k + r - m;
+                                int outCol = l + r - n;
+                                if (outRow >= 0 && outRow < height && outCol >= 0 && outCol < width) {
+                                    int filter_idx = out_ch * (in_channels * (2*r+1) * (2*r+1)) + in_ch * ((2*r+1) * (2*r+1)) + (2*r-m) * (2*r+1) + (2*r-n);
+                                    int output_idx = i * (out_channels * height * width) + out_ch * (height * width) + outRow * width + outCol;
+                                    grad_sum += filter[filter_idx] * grad_output[output_idx];
+                                }
+                            }
+                        }
+                    }
+                    int input_idx = i * (in_channels * height * width) + in_ch * (height * width) + k * width + l;
+                    grad_input[input_idx] = grad_sum;
+                }
+            }
+        }
+    }
+
+    for (int out_ch = 0; out_ch < out_channels; out_ch++){
+        for (int in_ch = 0; in_ch < in_channels; in_ch++){
+            for (int m = 0; m < 2*r+1; m++){
+                for (int n = 0; n < 2*r+1; n++){
+                    float grad_sum = 0.0f;
+                    for (int i = 0; i < batch_size; i++){
+                        for (int k = 0; k < height; k++){
+                            for (int l = 0; l < width; l++){
+                                int inRow = k + r - m;
+                                int inCol = l + r - n;
+                                if (inRow >= 0 && inRow < height && inCol >= 0 && inCol < width) {
+                                    int input_idx = i * (in_channels * height * width) + in_ch * (height * width) + inRow * width + inCol;
+                                    int output_idx = i * (out_channels * height * width) + out_ch * (height * width) + k * width + l;
+                                    grad_sum += input[input_idx] * grad_output[output_idx];
+                                }
+                            }
+                        }
+                    }
+                    int filter_idx = out_ch * (in_channels * (2*r+1) * (2*r+1)) + in_ch * ((2*r+1) * (2*r+1)) + m * (2*r+1) + n;
+                    grad_filter[filter_idx] = grad_sum;
+                }
+            }
+        }
+    }
+}
+
+
+void convtranspose2d_forward(float *input, float *output, float *filter, int stride, int r, int in_channels, int out_channels, int i_height, int i_width, int o_height, int o_width){    
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < out_channels; j++){
+            for (int k = 0; k < i_height; k++){
+                for (int l = 0; l < i_width; l++){
+                    for (int in_ch = 0; in_ch < in_channels; in_ch++){
+                        float input_val = input[i * (in_channels * i_height * i_width) + in_ch * (i_height * i_width) + k * i_width + l];
+                        for (int m = 0; m < 2*r+1; m++){
+                            for (int n = 0; n < 2*r+1; n++){
+                                int out_row = k * stride + m - r;
+                                int out_col = l * stride + n - r;                                
+                                if (out_row >= 0 && out_row < o_height && out_col >= 0 && out_col < o_width){
+                                    int filter_idx = j * (in_channels * (2*r+1) * (2*r+1)) + in_ch * ((2*r+1) * (2*r+1)) + m * (2*r+1) + n;
+                                    int output_idx = i * (out_channels * o_height * o_width) + j * (o_height * o_width) + out_row * o_width + out_col;                                    
+                                    output[output_idx] += filter[filter_idx] * input_val;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void convtranspose2d_backward(float *input, float *output, float *filter, float *grad_input, float *grad_output, float *grad_filter, int stride, int r, int in_channels, int out_channels, int i_height, int i_width, int o_height, int o_width){
+    for (int i = 0; i < batch_size; i++){
+        for (int in_ch = 0; in_ch < in_channels; in_ch++){
+            for (int k = 0; k < i_height; k++){
+                for (int l = 0; l < i_width; l++){
+                    float Pval = 0.0f;
+                    for (int j = 0; j < out_channels; j++){
+                        for (int m = 0; m < 2*r+1; m++){
+                            for (int n = 0; n < 2*r+1; n++){
+                                int out_row = k * stride + m - r;
+                                int out_col = l * stride + n - r; 
+                                if (out_row >= 0 && out_row < o_height && out_col >= 0 && out_col < o_width) {
+                                    int filter_idx = j * (in_channels * (2*r+1) * (2*r+1)) + in_ch * ((2*r+1) * (2*r+1)) + m * (2*r+1) + n;
+                                    int output_idx = i * (out_channels * o_height * o_width) + j * (o_height * o_width) + out_row * o_width + out_col;                                    
+                                    Pval += grad_output[output_idx] * filter[filter_idx];
+                                }
+                            }
+                        }
+                    }
+                    int input_idx = i * (in_channels * i_height * i_width) + in_ch * (i_height * i_width) + k * i_width + l;
+                    grad_input[input_idx] = Pval;
+                }
+            }
+        }
+    }
+
+    for (int j = 0; j < out_channels; j++){
+        for (int in_ch = 0; in_ch < in_channels; in_ch++){
+            for (int m = 0; m < 2*r+1; m++){
+                for (int n = 0; n < 2*r+1; n++){
+                    float Pval = 0.0f;
+                    for (int i = 0; i < batch_size; i++){
+                        for (int k = 0; k < i_height; k++){  
+                            for (int l = 0; l < i_width; l++){
+                                int out_row = k * stride + m - r;  
+                                int out_col = l * stride + n - r;  
+                                if (out_row >= 0 && out_row < o_height && out_col >= 0 && out_col < o_width) {
+                                    int input_idx = i * (in_channels * i_height * i_width) + in_ch * (i_height * i_width) + k * i_width + l;
+                                    int output_idx = i * (out_channels * o_height * o_width) + j * (o_height * o_width) + out_row * o_width + out_col;
+                                    Pval += input[input_idx] * grad_output[output_idx];
+                                }
+                            }
+                        }
+                    }
+                    int filter_idx = j * (in_channels * (2*r+1) * (2*r+1)) + in_ch * ((2*r+1) * (2*r+1)) + m * (2*r+1) + n;
+                    grad_filter[filter_idx] = Pval;
+                }
+            }
+        }
+    }
+}
+
+void relu_forward(float *input, float *output, int in_channels, int height, int width){
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < in_channels; j++){
+            for (int k = 0; k < height; k++){
+                for (int l = 0; l < width; l++){
+                    int input_idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;
+                    output[input_idx] = fmaxf(0.0f, input[input_idx]);
+                }
+            }
+        }
+    }
+}
+
+void relu_backward(float *forward_input, float *grad_output, float *grad_input, int in_channels, int height, int width) {
+    for (int i = 0; i < batch_size; i++) {
+        for (int j = 0; j < in_channels; j++) {
+            for (int k = 0; k < height; k++) {
+                for (int l = 0; l < width; l++) {
+                    int input_idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;
+                    if (forward_input[input_idx] > 0) {
+                        grad_input[input_idx] += grad_output[input_idx];
+                    } else {
+                        grad_input[input_idx] = 0.0f;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void bias_conv_forward(float *input, float *bias, int in_channels, int height, int width){
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < in_channels; j++){
+            for (int k = 0; k < height; k++){
+                for (int l = 0; l < width; l++){
+                    int idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;
+                    input[idx] += bias[j];
+                }
+            }
+        }
+    }
+}
+
+void bias_conv_backward(float *grad_output, float *grad_bias, int in_channels, int height, int width){
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < in_channels; j++){
+            for (int k = 0; k < height; k++){
+                for (int l = 0; l < width; l++){
+                    int idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;
+                    grad_bias[j] += grad_output[idx];
+                }
+            }
+        }
+    }
+}
+
+void bias_forward(float *input, float *bias, int size){
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < size; j++){
+            input[i * size + j] += bias[j];
+        }
+    }
+}
+
+void bias_backward(float *grad_bias, float *grad, int batch_size, int size) {
+    for (int i = 0; i < size; i++) {
+        grad_bias[i] = 0.0f;
+        for (int b = 0; b < batch_size; b++) {
+            grad_bias[i] += grad[b * size + i];
+        }
+    }
+}
+
+void groupnorm_forward(float *input, float *mean, float *var, int in_channels, int num_groups, int height, int width){
+    int group_size = in_channels / num_groups;
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < num_groups; j++){
+            float summ = 0.0f;
+            for (int k = 0; k < group_size; k++){
+                for (int l = 0; l < height; l++){
+                    for (int m = 0; m < width; m++){
+                        int channel = j * group_size + k;
+                        int idx = i * (in_channels * height * width) + channel * (height * width) + l * width + m;
+                        summ += input[idx];
+                    }
+                }
+            }
+            mean[i * (num_groups) + j] = summ / (group_size * height * width);
+        }
+    }
+
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < num_groups; j++){
+            float summ_sq = 0.0f;
+            for (int k = 0; k < group_size; k++){
+                for (int l = 0; l < height; l++){
+                    for (int m = 0; m < width; m++){
+                        int channel = j * group_size + k;
+                        int idx = i * (in_channels * height * width) + channel * (height * width) + l * width + m;
+                        float diff = input[idx] - mean[i * (num_groups) + j];
+                        summ_sq += diff * diff;
+                    }
+                }
+            }
+            var[i * (num_groups) + j] = summ_sq / (group_size * height * width);
+        }
+    }
+
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < num_groups; j++){
+            for (int k = 0; k < group_size; k++){
+                for (int l = 0; l < height; l++){
+                    for (int m = 0;m < width; m++){
+                        int channel = j * group_size + k;
+                        int idx = i * (in_channels * height * width) + channel * (height * width) + l * width + m;
+                        float denom = var[i * (num_groups) + j] + 1e-8;
+                        input[idx] = (input[idx] - mean[i * (num_groups) + j]) / sqrtf(denom);
+                    }
+                }
+            }
+        }
+    }
+}
+
+void groupnorm_backward(float *input, float *mean, float *var, float *grad_input, float *grad_output, float *grad_mean, float *grad_var, int in_channels, int num_groups, int height, int width){
+    int group_size = in_channels / num_groups;  
+    
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < num_groups; j++){
+            float summ = 0.0f;  
+            for (int k = 0; k < group_size; k++){
+                for (int l = 0; l < height; l++){
+                    for (int m = 0; m < width; m++){
+                        int channel = j * group_size + k;
+                        int idx = i * (in_channels * height * width) + channel * (height * width) + l * width + m;
+                
+                        summ += grad_output[idx] * (input[idx] - mean[i * (num_groups) + j]);
+                    }
+                }
+            }
+            grad_var[i * (num_groups) + j] = summ * (-0.5f) * powf(var[i * (num_groups) + j] + 1e-8, -1.5f);
+        }
+    }
+
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < num_groups; j++){
+            float term_1 = 0.0f;
+            float term_2 = 0.0f;
+            for (int k = 0; k < group_size; k++){
+                for (int l = 0; l < height; l++){
+                    for (int m = 0; m < width; m++){
+                        int channel = j * group_size + k;
+                        int idx = i * (in_channels * height * width) + channel * (height * width) + l * width + m;
+                        term_1 += grad_output[idx] * (-1.0f / sqrtf(var[i * (num_groups) + j] + 1e-8));
+                        float var_grad_wrt_mean = (-2.0f / (group_size * height * width)) * (input[idx] - mean[i * (num_groups) + j]);
+                        term_2 += grad_output[idx] * var_grad_wrt_mean * (-0.5f) * (input[idx] - mean[i * (num_groups) + j]) * powf(var[i * (num_groups) + j] + 1e-8, -1.5f);
+                    }
+                }
+            }
+            grad_mean[i * (num_groups) + j] = term_1 + term_2;
+        }
+    }
+
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < num_groups; j++){
+            for (int k = 0; k < group_size; k++){
+                for (int l = 0; l < height; l++){
+                    for (int m = 0; m < width; m++){
+                        int channel = j * group_size + k;
+                        int idx = i * (in_channels * height * width) + channel * (height * width) + l * width + m;
+                        float term_1 = grad_output[idx] * (1.0f / sqrtf(var[i * (num_groups) + j] + 1e-8));
+                        float term_2 = grad_var[i * (num_groups) + j] * (2.0f/(group_size * height * width)) * (input[idx] - mean[i * (num_groups) + j]);
+                        float term_3 = grad_mean[i * (num_groups) + j] * (1.0f/(group_size * height * width));
+                        
+                        grad_input[idx] += term_1 + term_2 + term_3;
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+void maxpool2d_forward(float *input, float *output, int kernel_size, int in_channels, int i_height, int i_width, int o_height, int o_width){
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < in_channels; j++){
+            for (int k = 0; k < o_height; k++){
+                for (int l = 0; l < o_width; l++){
+                    float maxx = -INFINITY;
+                    for (int m = 0; m < kernel_size; m++){
+                        for (int n = 0; n < kernel_size; n++){
+                            int input_row = k * kernel_size + m;
+                            int input_col = l * kernel_size + n;
+                            int input_idx = i * (in_channels * i_height * i_width) + j * (i_height * i_width) + input_row * i_width + input_col;
+                            maxx = fmaxf(maxx, input[input_idx]);
+                        }
+                    }
+                    int output_idx = i * (in_channels * o_height * o_width) + j * (o_height * o_width) + k * o_width + l;
+                    output[output_idx] = maxx;
+                }
+            }
+        }
+    }
+}
+
+void maxpool2d_backward(float *input, float *output, float *grad_input, float *grad_output, int kernel_size, int in_channels, int i_height, int i_width, int o_height, int o_width){
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < in_channels; j++){
+            for (int k = 0; k < o_height; k++){
+                for (int l = 0; l < o_width; l++){
+                    for (int m = 0; m < kernel_size; m++){
+                        for (int n = 0; n < kernel_size; n++){
+                            int input_row = k * kernel_size + m;
+                            int input_col = l * kernel_size + n;
+                            int input_idx = i * (in_channels * i_height * i_width) + j * (i_height * i_width) + input_row * i_width + input_col;
+                            int output_idx = i * (in_channels * o_height * o_width) + j * (o_height * o_width) + k * o_width + l;
+                            if (output[output_idx] == input[input_idx]){
+                                grad_input[input_idx] = grad_output[output_idx];
+                            } 
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void sin_forward(float *input, float *output){
+    for (int i = 0; i < BATCH_SIZE; i++){
+        for (int j = 0; j < TIME_HIDDEN_SIZE; j++){
+            int idx = i * (TIME_HIDDEN_SIZE) + j;
+            output[idx] = sin(input[idx]);
+        }
+    }
+}
+
+void sin_backward(float *input, float *grad_output, float *grad_input) {
+    for (int i = 0; i < BATCH_SIZE; i++) {
+        for (int j = 0; j < TIME_HIDDEN_SIZE; j++) {
+            int idx = i * (TIME_HIDDEN_SIZE) + j;
+            grad_input[idx] += grad_output[idx] * cos(input[idx]);
+        }
+    }
+}
+
+
+void ddpm_schedule(float *alpha, float *oneover_sqrta, float *sqrt_beta, float *alphabar, float *sqrtab, float *sqrtmab, float *mab_over_sqrtmab){
+    float beta[TIMESTEPS];
+    float log_alpha[TIMESTEPS];
+    float summ = 0.0f;
+    
+    for (int i = 0; i < TIMESTEPS; i++){
+        beta[i] = (BETA_2 - BETA_1) * ((float)i) / TIMESTEPS + BETA_1;
+        sqrt_beta[i] = sqrtf(beta[i]);
+        alpha[i] = 1.0f - beta[i];
+        log_alpha[i] = logf(alpha[i]);
+        summ += log_alpha[i];
+        alphabar[i] = expf(summ);
+        sqrtab[i] = sqrtf(alphabar[i]);
+        oneover_sqrta[i] = 1.0f / sqrtf(alpha[i]);
+        sqrtmab[i] = sqrtf(1.0f - alphabar[i]);
+        mab_over_sqrtmab[i] = (1.0f - alpha[i]) / sqrtmab[i];
+    }
+}
+
+void noise_addition(float *input, float *output, float *noise, int *timesteps, float *sqrt_alpha_bar, float *sqrt_one_minus_alpha_bar, int batch_size, int in_channels, int height, int width) {
+    for (int i = 0; i < batch_size; i++) {
+        int t = timesteps[i];
+        float sqrt_alpha_bar1 = sqrt_alpha_bar[t];
+        float sqrt_one_minus_alpha_bar1 = sqrt_one_minus_alpha_bar[t];
+        for (int j = 0; j < in_channels; j++) {
+            for (int k = 0; k < height; k++) {
+                for (int l = 0; l < width; l++) {
+                    int idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;        
+                    output[idx] = (sqrt_alpha_bar1 * input[idx]) + (sqrt_one_minus_alpha_bar1 * noise[idx]);
+                }
+            }
+        }
+    }
+}
+
+void noise_addition_backward(float *grad_output, float *grad_input, float *grad_noise, int *timesteps, float *sqrt_alpha_bar, float *sqrt_one_minus_alpha_bar, int batch_size, int in_channels, int height, int width) {
+    for (int i = 0; i < batch_size; i++) {
+        int t = timesteps[i];
+        float sqrt_alpha_bar1 = sqrt_alpha_bar[t];
+        float sqrt_one_minus_alpha_bar1 = sqrt_one_minus_alpha_bar[t];
+        
+        for (int j = 0; j < in_channels; j++) {
+            for (int k = 0; k < height; k++) {
+                for (int l = 0; l < width; l++) {
+                    int idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;
+                    
+                    // Gradient w.r.t input: d(output)/d(input) = sqrt_alpha_bar1
+                    grad_input[idx] += grad_output[idx] * sqrt_alpha_bar1;
+                    
+                    // Gradient w.r.t noise: d(output)/d(noise) = sqrt_one_minus_alpha_bar1
+                    grad_noise[idx] += grad_output[idx] * sqrt_one_minus_alpha_bar1;
+                }
+            }
+        }
+    }
+}
+
+void randn(float *output, int size, unsigned int seed) {
+    srand(seed);
+    for (int i = 0; i < size; i++) {
+        float sum = 0.0f;
+        for (int j = 0; j < 12; j++) {
+            sum += (float)rand() / (float)RAND_MAX;
+        }
+        output[i] = sum - 6.0f;
+    }
+}
+
+void randint_with_seed(float *output, int low, int high, int size, unsigned int seed) {
+    srand(seed);
+    int range = high - low;
+    for (int i = 0; i < size; i++) {
+        output[i] = low + (rand() % range);
+    }
+}
+
+void add_time_embedding(float *input, float *time_input, float *output, int batch_size, int in_channels, int height, int width) {
+    for (int i = 0; i < batch_size; i++) {
+        for (int j = 0; j < in_channels; j++) {
+            for (int k = 0; k < height; k++) {
+                for (int l = 0; l < width; l++) {
+                    int idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;
+                    output[idx] = input[idx] + time_input[i * in_channels + j];
+                }
+            }
+        }
+    }
+}
+
+void add_time_embedding_backward(float *grad_output, float *grad_input, float *grad_time_input, int batch_size, int in_channels, int height, int width) {    
+    for (int i = 0; i < batch_size; i++) {
+        for (int j = 0; j < in_channels; j++) {
+            for (int k = 0; k < height; k++) {
+                for (int l = 0; l < width; l++) {
+                    int idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;
+                    grad_input[idx] += grad_output[idx];
+                    grad_time_input[i * in_channels + j] += grad_output[idx];
+                }
+            }
+        }
+    }
+}
+
+float mse_loss(float *output, float *labels, int in_channels, int height, int width){
+    float loss = 0.0f;
+    for (int i = 0; i < batch_size; i++){
+        for (int j = 0; j < in_channels; j++){
+            for (int k = 0; k < height; k++){
+                for (int l = 0; l < width; l++){
+                    int idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;
+                    float diff = output[idx] - labels[idx];
+                    loss += (diff * diff);
+                }
+            }
+        }
+    }
+
+    return loss / (batch_size * in_channels * height * width);
+}
+
+void mse_loss_backward(float *output, float *labels, float *grad_output, int in_channels, int height, int width) {
+    float N = batch_size * in_channels * height * width;
+    for (int i = 0; i < batch_size; i++) {
+        for (int j = 0; j < in_channels; j++) {
+            for (int k = 0; k < height; k++) {
+                for (int l = 0; l < width; l++) {
+                    int idx = i * (in_channels * height * width) + j * (height * width) + k * width + l;
+                    grad_output[idx] = (2.0f / N) * (output[idx] - labels[idx]); 
+                }
+            }
+        }
+    }
+}
